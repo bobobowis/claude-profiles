@@ -3,7 +3,7 @@
 **Status:** shipped (v0.3)
 **Repo:** https://github.com/bobobowis/claude-profiles
 **Stack:** bash, Linux/Mac
-**Deps:** `jq` (optional — required for MCP server switching)
+**Deps:** `python3` (required for MCP server switching — ships on every Mac/Linux by default)
 
 ---
 
@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/inst
 | `output-styles/` | `~/.claude/output-styles/` | symlinks |
 | `workflows/` | `~/.claude/workflows/` | symlinks |
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` | symlink |
-| `mcp.json` | `~/.claude.json` `mcpServers` | `jq` patch |
+| `mcp.json` | `~/.claude.json` `mcpServers` | `python3` patch |
 
 Skills link by folder name — invoke as `/skill-name`.
 
@@ -95,13 +95,13 @@ Claude Code reads configuration from `~/.claude/` at session start. `claude-prof
 
 ### MCP server management
 
-MCP servers live in `~/.claude.json` (not a directory, so symlinks don't work). `claude-profiles` uses `jq` to patch only the `mcpServers` key:
+MCP servers live in `~/.claude.json` (not a directory, so symlinks don't work). `claude-profiles` uses `python3` to patch only the `mcpServers` key:
 
 - **Never touches** pre-existing servers you added yourself
 - **Tracks ownership** in `~/.agents/.mcp-state.json`
 - On switch: removes previous profile's servers, injects new ones
 - If new profile has no `mcp.json`, previous profile's servers are still cleaned
-- Requires `jq` — skips with a warning if unavailable
+- Requires `python3` (ships on every Mac/Linux — no install needed). Hard fails if missing and `mcp.json` is configured, so you always know MCP didn't switch.
 - Takes effect on next Claude Code session start
 
 ```json
@@ -168,7 +168,7 @@ argument-hint: <note-path>
 |---|---|---|
 | `~/.claude/agents/`, `rules/`, `skills/`, `output-styles/`, `workflows/` | Creates/removes symlinks | Only removes symlinks whose target is inside `~/.agents/`. Other tools' symlinks are never touched. |
 | `~/.claude/CLAUDE.md` | Replaces with symlink | Backs up existing regular file as `CLAUDE.md.bak` before symlinking. Restored by `revert`. |
-| `~/.claude.json` `mcpServers` | `jq` patch — replaces key in-place | Only removes servers it previously added (tracked in `.mcp-state.json`). Pre-existing servers never touched. Writes to a temp file then `mv` — avoids partial writes. |
+| `~/.claude.json` `mcpServers` | `python3` patch — replaces key in-place | Only removes servers it previously added (tracked in `.mcp-state.json`). Pre-existing servers never touched. Writes to a temp file then atomic `os.replace()` — avoids partial writes. |
 
 ### What it never touches
 
