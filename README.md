@@ -75,6 +75,37 @@ Skills link by folder name — invoke as `/skill-name`, not `/profile-skill-name
 
 ---
 
+## How it works
+
+Claude Code reads its configuration from `~/.claude/` at session start. `claude-profiles` manages that directory by creating and cleaning symlinks — it never modifies files directly.
+
+### On `claude-profiles use <name>`
+
+1. **Clean** — scan each managed `~/.claude/` subdir (`agents/`, `rules/`, `skills/`, `output-styles/`, `workflows/`) and remove any symlinks whose target is inside `~/.agents/`. This covers both the previous profile's artifacts and shared ones being relinked.
+
+2. **Link shared** — symlink everything from `~/.agents/shared/<subdir>/` into the corresponding `~/.claude/<subdir>/`. Shared artifacts are always present regardless of which profile is active.
+
+3. **Link profile** — symlink everything from `~/.agents/profiles/<name>/<subdir>/` into `~/.claude/<subdir>/`. Profile artifacts override shared ones on name conflict.
+
+4. **Switch** — update `~/.agents/current` symlink to point at the new profile directory.
+
+5. **CLAUDE.md** — if the profile has a `CLAUDE.md`, remove any managed symlink at `~/.claude/CLAUDE.md` (or back up an unmanaged regular file), then symlink the profile's file in its place.
+
+### Ownership tracking
+
+Links are tracked by target path — if `readlink <link>` starts with `~/.agents/`, it's ours to clean. No naming prefixes, no state file.
+
+### What Claude Code sees
+
+After a `use`, Claude Code's session starts with exactly the artifacts for that profile plus shared, as if they had been authored directly under `~/.claude/`. No plugin, no hook, no extension needed — just the filesystem Claude Code already reads.
+
+```
+~/.claude/skills/classify-inbox  →  ~/.agents/profiles/brain/skills/classify-inbox/
+~/.claude/CLAUDE.md              →  ~/.agents/profiles/brain/CLAUDE.md
+```
+
+---
+
 ## Skill structure
 
 Skills must be folders, not single files:
