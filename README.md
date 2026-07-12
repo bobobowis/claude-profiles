@@ -17,6 +17,15 @@ Solves the problem of running Claude across multiple contexts (personal brain, w
 
 ## Install
 
+**Homebrew (Mac/Linux):**
+
+```bash
+brew tap bobobowis/claude-profiles
+brew install claude-profiles
+```
+
+**curl:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/install.sh | bash
 ```
@@ -179,7 +188,7 @@ argument-hint: <note-path>
 
 ### Known risks
 
-**Race condition on `~/.claude.json`**: if Claude Code is writing to `~/.claude.json` at the same moment `use` patches it, the `jq` output could be stale. Mitigation: run `use` when Claude Code is not actively running a session. The `mv` from a tempfile is atomic on the same filesystem, so no partial writes.
+**Race condition on `~/.claude.json`**: if Claude Code is writing to `~/.claude.json` at the same moment `use` patches it, the `python3` output could be stale. Mitigation: run `use` when Claude Code is not actively running a session. The `mv` from a tempfile is atomic on the same filesystem, so no partial writes.
 
 **`.mcp-state.json` loss**: if `~/.agents/.mcp-state.json` is deleted or corrupted, the next `use` won't know which servers to remove. Managed servers from the previous profile stay in `~/.claude.json` until removed manually or until `revert` is run (which clears based on state file — so if state is gone, MCP servers from the previous profile won't be auto-cleaned). Fix: run `claude-profiles revert` then `claude-profiles use <name>` to reset cleanly.
 
@@ -205,7 +214,7 @@ argument-hint: <note-path>
 
 - **v1:** bash only — Linux/Mac. No Windows.
 - **Team sharing:** convention-only. Store profiles in a git repo, symlink/copy into `~/.agents/profiles/`.
-- **MCP:** patches `~/.claude.json` via `jq`. User-added servers are never touched.
+- **MCP:** patches `~/.claude.json` via `python3`. User-added servers are never touched.
 
 ---
 
@@ -213,5 +222,5 @@ argument-hint: <note-path>
 
 - [ ] `claude-profiles import <path|url>` — pull profile from git repo
 - [ ] Shell completion (bash/zsh)
-- [ ] Homebrew formula
+- [x] Homebrew formula
 - [ ] Go rewrite for Windows + richer UX
