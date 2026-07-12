@@ -1,6 +1,6 @@
 # claude-profiles
 
-**Status:** shipped (v0.5)
+**Status:** shipped (v0.6)
 **Repo:** https://github.com/bobobowis/claude-profiles
 **Stack:** bash, Linux/Mac
 **Deps:** `python3` (required for MCP server switching — ships on every Mac/Linux by default)
@@ -54,6 +54,26 @@ echo 'eval "$(claude-profiles --completion-zsh)"' >> ~/.zshrc
 | `claude-profiles validate [name]` | Check integrity — symlinks, dirs, mcp.json, SKILL.md |
 | `claude-profiles revert` | Remove current profile from Claude config, restore clean state |
 | `claude-profiles uninstall` | Revert + binary removal instructions |
+
+---
+
+## Aliases & shortcuts
+
+Switch profile and open Claude Code in one command. Add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+# Per-profile aliases
+alias claude-brain='claude-profiles use brain && claude .'
+alias claude-work='claude-profiles use work && claude .'
+
+# Generic function — takes profile name and optional path
+cc() {
+  claude-profiles use "$1" && claude "${2:-.}"
+}
+# Usage:
+#   cc brain          → switch to brain, open Claude in current dir
+#   cc work ~/myrepo  → switch to work, open Claude in ~/myrepo
+```
 
 ---
 
