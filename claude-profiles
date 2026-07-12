@@ -529,10 +529,60 @@ $(_bold "MCP notes:")
   ~/.claude.json are never touched. State tracked in ~/.agents/.mcp-state.json.
   Takes effect on next Claude Code session start.
 
+$(_bold "Shell completion:")
+  bash:  echo 'eval "\$(claude-profiles --completion-bash)"' >> ~/.bashrc
+  zsh:   echo 'eval "\$(claude-profiles --completion-zsh)"'  >> ~/.zshrc
+
 $(_bold "Env:")
   CLAUDE_PROFILES_DIR   (default: ~/.agents)
   CLAUDE_DIR            (default: ~/.claude)
 EOF
+}
+
+cmd_completion_bash() {
+  cat <<'BASH'
+_claude_profiles_complete() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=($(compgen -W "use init list validate revert uninstall help" -- "$cur"))
+  elif [[ "$prev" == "use" || "$prev" == "validate" ]]; then
+    local profiles
+    profiles=$(ls "${CLAUDE_PROFILES_DIR:-$HOME/.agents}/profiles/" 2>/dev/null)
+    COMPREPLY=($(compgen -W "$profiles" -- "$cur"))
+  fi
+}
+complete -F _claude_profiles_complete claude-profiles
+BASH
+}
+
+cmd_completion_zsh() {
+  cat <<'ZSH'
+_claude_profiles() {
+  local -a profiles
+  case $words[2] in
+    use|validate)
+      profiles=(${(f)"$(ls ${CLAUDE_PROFILES_DIR:-$HOME/.agents}/profiles/ 2>/dev/null)"})
+      _describe 'profile' profiles
+      ;;
+    *)
+      local -a cmds
+      cmds=(
+        'use:switch to profile'
+        'init:scaffold new profile'
+        'list:list profiles and active'
+        'validate:check integrity'
+        'revert:remove profile from Claude config'
+        'uninstall:revert and remove binary'
+        'help:show help'
+      )
+      _describe 'command' cmds
+      ;;
+  esac
+}
+compdef _claude_profiles claude-profiles
+ZSH
 }
 
 case "${1:-help}" in
@@ -543,5 +593,7 @@ case "${1:-help}" in
   revert)    cmd_revert ;;
   uninstall) cmd_uninstall ;;
   help|--help|-h) cmd_help ;;
+  --completion-bash) cmd_completion_bash ;;
+  --completion-zsh)  cmd_completion_zsh ;;
   *) echo "Unknown command: $1"; echo ""; cmd_help; exit 1 ;;
 esac
