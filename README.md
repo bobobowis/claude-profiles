@@ -1,12 +1,26 @@
-# claude-profiles
+<p align="center">
+  <img src="./assets/banner.png" alt="claude-profiles banner" width="100%" />
+</p>
 
-**Status:** shipped (v0.6)
-**Repo:** https://github.com/bobobowis/claude-profiles
-**Stack:** bash, Linux/Mac
-**Deps:** `python3` (required for MCP server switching — ships on every Mac/Linux by default)
+<div align="center">
+
+# 🤖 claude-profiles
+
+
+**Isolate and switch Claude Code environments seamlessly.**
+
+[![Version](https://img.shields.io/badge/status-shipped--v0.6-success?style=flat-square)](#)
+[![Stack](https://img.shields.io/badge/stack-bash%20%7C%20Mac%20%7C%20Linux-blue?style=flat-square)](#)
+
+</div>
 
 ---
 
+> **The Problem:** Running Claude Code across multiple projects (a day job codebase, personal tools, or separate client repos) often requires completely different MCP tools, local rules, and workflow scripts. Modifying global files manually breaks your environments.
+> 
+> **The Solution:** `claude-profiles` isolates these configurations into dedicated directories and uses filesystem symlinks and atomic JSON patching to swap active profiles on the fly.
+
+---
 ## What it does
 
 Switches Claude Code's active agent context — skills, instructions (CLAUDE.md), rules, agents, output styles, workflows, and MCP servers — without touching global config.
@@ -15,15 +29,17 @@ Solves the problem of running Claude across multiple contexts (personal brain, w
 
 ---
 
-## Install
+## 🚀 Install
 
-**Homebrew (Mac/Linux):**
+### Option A: Homebrew (Mac/Linux)
+*Installs the binary and configures shell completion automatically.*
 
 ```bash
 brew tap bobobowis/claude-profiles
 brew install claude-profiles
 ```
 
+### Option B: Curl
 Completion is installed automatically via Homebrew.
 
 **curl:**
@@ -32,19 +48,15 @@ Completion is installed automatically via Homebrew.
 curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/install.sh | bash
 ```
 
-Then enable completion manually:
+If installing via curl, enable completion manually by adding this to your shell profile (`~/.bashrc` or `~/.zshrc`):
 
 ```bash
-# bash
-echo 'eval "$(claude-profiles --completion-bash)"' >> ~/.bashrc
-
-# zsh
-echo 'eval "$(claude-profiles --completion-zsh)"' >> ~/.zshrc
+eval "$(claude-profiles --completion-$(basename $SHELL))"
 ```
 
 ---
 
-## Commands
+## 🕹️ Commands
 
 | Command | Description |
 |---|---|
@@ -57,9 +69,9 @@ echo 'eval "$(claude-profiles --completion-zsh)"' >> ~/.zshrc
 
 ---
 
-## Aliases & shortcuts
+## ⚡ Shell Integration & Shortcuts
 
-Switch profile and open Claude Code in one command. Add to `~/.bashrc` or `~/.zshrc`:
+To automate switching profiles and launching Claude Code in a single action, add these to your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
 # Per-profile aliases
@@ -77,7 +89,8 @@ cc() {
 
 ---
 
-## Convention
+## 📂 Architecture & Convention
+All profiles live in your home directory under `~/.agents/`. Artifacts inside `shared/` are always active, while profile-specific artifacts will cleanly override shared items on a name conflict.
 
 ```
 ~/.agents/
@@ -101,7 +114,7 @@ cc() {
   .mcp-state.json     # tracks which MCP servers we manage
 ```
 
-### How artifacts map to `~/.claude/`
+### 🔄 How artifacts map to `~/.claude/`
 
 | Profile file/dir | Target | Mechanism |
 |---|---|---|
@@ -113,15 +126,14 @@ cc() {
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` | symlink |
 | `mcp.json` | `~/.claude.json` `mcpServers` | `python3` patch |
 
-Skills link by folder name — invoke as `/skill-name`.
-
-**Shared artifacts** always stay active. Profile wins on name conflict.
-
-**Symlink tracking**: owned links are identified by target path starting with `~/.agents/` — no naming prefixes.
+> [!NOTE]
+> - **Skill Note:** Skills map by folder name. Once linked, they are invoked inside Claude Code using `/skill-name`.
+> - **Shared artifacts** always stay active. Profile wins on name conflict.
+> - **Symlink tracking**: owned links are identified by target path starting with `~/.agents/` — no naming prefixes.
 
 ---
 
-## How it works
+## 🛠️ Deep Dive: How It Works
 
 Claude Code reads configuration from `~/.claude/` at session start. `claude-profiles` manages that directory with symlinks — it never modifies files directly — plus patches `~/.claude.json` for MCP servers.
 
