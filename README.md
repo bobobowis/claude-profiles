@@ -1,16 +1,17 @@
 # claude-profiles
 
-**Status:** shipped (v0.2)
+**Status:** shipped (v0.3)
 **Repo:** https://github.com/bobobowis/claude-profiles
 **Stack:** bash, Linux/Mac
+**Deps:** `jq` (optional — required for MCP server switching)
 
 ---
 
 ## What it does
 
-Switches Claude Code's active agent context — skills, instructions (CLAUDE.md), rules, agents, output styles, and workflows — without touching global config.
+Switches Claude Code's active agent context — skills, instructions (CLAUDE.md), rules, agents, output styles, workflows, and MCP servers — without touching global config.
 
-Solves the problem of running Claude across multiple contexts (personal brain, work codebase, side projects) where each needs different skills and different instructions.
+Solves the problem of running Claude across multiple contexts (personal brain, work codebase, side projects) where each needs different tools and different instructions.
 
 ---
 
@@ -26,10 +27,10 @@ curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/inst
 
 | Command | Description |
 |---|---|
-| `claude-profiles use <name>` | Switch profile — relinks all artifacts and CLAUDE.md |
+| `claude-profiles use <name>` | Switch profile — relinks artifacts, CLAUDE.md, MCP servers |
 | `claude-profiles init <name>` | Scaffold new profile with correct folder structure |
-| `claude-profiles list` | Show all profiles and which is active |
-| `claude-profiles validate [name]` | Check integrity — symlinks, dirs, SKILL.md presence |
+| `claude-profiles list` | Show all profiles, active, and artifact counts |
+| `claude-profiles validate [name]` | Check integrity — symlinks, dirs, mcp.json, SKILL.md |
 
 ---
 
@@ -45,75 +46,95 @@ curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/inst
       output-styles/  # output style .md files
       workflows/      # workflow .js files
       CLAUDE.md       # (optional) profile instructions
+      mcp.json        # (optional) MCP servers for this profile
   shared/
     agents/           # always active across all profiles
     rules/
     skills/
     output-styles/
     workflows/
+    mcp.json          # MCP servers always present across all profiles
   current -> profiles/<active>
+  .mcp-state.json     # tracks which MCP servers we manage
 ```
 
 ### How artifacts map to `~/.claude/`
 
-| Profile subdir | Claude Code dir | Item type |
+| Profile file/dir | Target | Mechanism |
 |---|---|---|
-| `agents/` | `~/.claude/agents/` | `.md` files |
-| `rules/` | `~/.claude/rules/` | `.md` files (supports `paths:` frontmatter for file-scoped loading) |
-| `skills/` | `~/.claude/skills/` | **folders** containing `SKILL.md` |
-| `output-styles/` | `~/.claude/output-styles/` | `.md` files |
-| `workflows/` | `~/.claude/workflows/` | `.js` files |
-| `CLAUDE.md` | `~/.claude/CLAUDE.md` | symlinked directly |
+| `agents/` | `~/.claude/agents/` | symlinks |
+| `rules/` | `~/.claude/rules/` | symlinks (supports `paths:` frontmatter) |
+| `skills/` | `~/.claude/skills/` | symlinks (folders containing `SKILL.md`) |
+| `output-styles/` | `~/.claude/output-styles/` | symlinks |
+| `workflows/` | `~/.claude/workflows/` | symlinks |
+| `CLAUDE.md` | `~/.claude/CLAUDE.md` | symlink |
+| `mcp.json` | `~/.claude.json` `mcpServers` | `jq` patch |
 
-Skills link by folder name — invoke as `/skill-name`, not `/profile-skill-name`.
+Skills link by folder name — invoke as `/skill-name`.
 
-**CLAUDE.md**: if a profile has one, it's symlinked to `~/.claude/CLAUDE.md` on `use`. An existing regular file is backed up as `CLAUDE.md.bak`.
+**Shared artifacts** always stay active. Profile wins on name conflict.
 
-**Shared artifacts** always stay linked. Profile wins on name conflict.
-
-**Symlink tracking**: links are owned/cleaned by checking if their target is inside `~/.agents/` — no naming prefixes needed.
+**Symlink tracking**: owned links are identified by target path starting with `~/.agents/` — no naming prefixes.
 
 ---
 
 ## How it works
 
-Claude Code reads its configuration from `~/.claude/` at session start. `claude-profiles` manages that directory by creating and cleaning symlinks — it never modifies files directly.
+Claude Code reads configuration from `~/.claude/` at session start. `claude-profiles` manages that directory with symlinks — it never modifies files directly — plus patches `~/.claude.json` for MCP servers.
 
 ### On `claude-profiles use <name>`
 
-1. **Clean** — scan each managed `~/.claude/` subdir (`agents/`, `rules/`, `skills/`, `output-styles/`, `workflows/`) and remove any symlinks whose target is inside `~/.agents/`. This covers both the previous profile's artifacts and shared ones being relinked.
+1. **Clean** — remove all symlinks in managed `~/.claude/` subdirs whose target is inside `~/.agents/`
+2. **Link shared** — symlink everything from `~/.agents/shared/<subdir>/` into `~/.claude/<subdir>/`
+3. **Link profile** — symlink everything from `~/.agents/profiles/<name>/<subdir>/` into `~/.claude/<subdir>/` (overrides shared on conflict)
+4. **Switch** — update `~/.agents/current` symlink
+5. **CLAUDE.md** — if the profile has one, symlink it to `~/.claude/CLAUDE.md` (backs up any existing regular file)
+6. **MCP** — remove previously managed MCP servers from `~/.claude.json`, inject merged `shared/mcp.json` + profile `mcp.json` servers
 
-2. **Link shared** — symlink everything from `~/.agents/shared/<subdir>/` into the corresponding `~/.claude/<subdir>/`. Shared artifacts are always present regardless of which profile is active.
+### MCP server management
 
-3. **Link profile** — symlink everything from `~/.agents/profiles/<name>/<subdir>/` into `~/.claude/<subdir>/`. Profile artifacts override shared ones on name conflict.
+MCP servers live in `~/.claude.json` (not a directory, so symlinks don't work). `claude-profiles` uses `jq` to patch only the `mcpServers` key:
 
-4. **Switch** — update `~/.agents/current` symlink to point at the new profile directory.
+- **Never touches** pre-existing servers you added yourself
+- **Tracks ownership** in `~/.agents/.mcp-state.json`
+- On switch: removes previous profile's servers, injects new ones
+- If new profile has no `mcp.json`, previous profile's servers are still cleaned
+- Requires `jq` — skips with a warning if unavailable
+- Takes effect on next Claude Code session start
 
-5. **CLAUDE.md** — if the profile has a `CLAUDE.md`, remove any managed symlink at `~/.claude/CLAUDE.md` (or back up an unmanaged regular file), then symlink the profile's file in its place.
+```json
+// ~/.agents/profiles/brain/mcp.json
+{
+  "mcpServers": {
+    "my-brain-tool": {
+      "command": "npx",
+      "args": ["-y", "@example/brain-mcp"],
+      "env": { "API_KEY": "${MY_API_KEY}" }
+    }
+  }
+}
+```
 
-### Ownership tracking
-
-Links are tracked by target path — if `readlink <link>` starts with `~/.agents/`, it's ours to clean. No naming prefixes, no state file.
-
-### What Claude Code sees
-
-After a `use`, Claude Code's session starts with exactly the artifacts for that profile plus shared, as if they had been authored directly under `~/.claude/`. No plugin, no hook, no extension needed — just the filesystem Claude Code already reads.
+### What Claude Code sees after `use`
 
 ```
 ~/.claude/skills/classify-inbox  →  ~/.agents/profiles/brain/skills/classify-inbox/
 ~/.claude/CLAUDE.md              →  ~/.agents/profiles/brain/CLAUDE.md
+~/.claude.json mcpServers        =   { ...user_servers, ...shared, ...profile }
 ```
+
+No plugin, no hook, no extension — just the filesystem Claude Code already reads.
 
 ---
 
 ## Skill structure
 
-Skills must be folders, not single files:
+Skills are folders, not single files:
 
 ```
 skills/
   classify-inbox/
-    SKILL.md          # entrypoint, frontmatter + instructions
+    SKILL.md          # entrypoint — frontmatter + instructions
     checklist.md      # optional supporting files
 ```
 
@@ -140,8 +161,8 @@ argument-hint: <note-path>
 ## Scope decisions
 
 - **v1:** bash only — Linux/Mac. No Windows.
-- **Team sharing:** convention-only. Store profiles in a repo, symlink/copy into `~/.agents/profiles/`.
-- **MCP servers:** not managed — configure in `~/.claude.json` (user scope) or `.mcp.json` (project root) per Claude Code spec.
+- **Team sharing:** convention-only. Store profiles in a git repo, symlink/copy into `~/.agents/profiles/`.
+- **MCP:** patches `~/.claude.json` via `jq`. User-added servers are never touched.
 
 ---
 
