@@ -370,6 +370,90 @@ cmd_validate() {
   fi
 }
 
+cmd_revert() {
+  local current; current="$(_current_profile)"
+
+  echo "$(_bold "Reverting claude-profiles")"
+  echo ""
+
+  # Remove all managed symlinks
+  local removed=0
+  for artifact in "${ARTIFACTS[@]}"; do
+    IFS=: read -r _pdir claude_subdir _type <<< "$artifact"
+    local tdir="$CLAUDE_DIR/$claude_subdir"
+    [ -d "$tdir" ] || continue
+    find "$tdir" -maxdepth 1 -type l | while read -r link; do
+      local dest; dest="$(readlink "$link")"
+      if [[ "$dest" == "$AGENTS_DIR/"* ]]; then
+        rm "$link"
+        echo "  - $claude_subdir/$(basename "$link")"
+      fi
+    done
+  done
+
+  # Restore CLAUDE.md from backup if we own the current symlink
+  if [ -L "$CLAUDE_MD" ]; then
+    local dest; dest="$(readlink "$CLAUDE_MD")"
+    if [[ "$dest" == "$AGENTS_DIR/"* ]]; then
+      rm "$CLAUDE_MD"
+      if [ -f "${CLAUDE_MD}.bak" ]; then
+        mv "${CLAUDE_MD}.bak" "$CLAUDE_MD"
+        echo "  - CLAUDE.md symlink removed, restored from .bak"
+      else
+        echo "  - CLAUDE.md symlink removed (no .bak to restore)"
+      fi
+    fi
+  fi
+
+  # Remove managed MCP servers
+  if [ -f "$MCP_STATE" ] && [ -f "$CLAUDE_JSON" ] && command -v jq &>/dev/null; then
+    local prev_servers; prev_servers="$(jq '.managed_servers // []' "$MCP_STATE")"
+    local count; count="$(jq 'length' <<< "$prev_servers")"
+    if [ "$count" -gt 0 ]; then
+      local tmp; tmp="$(mktemp)"
+      jq --argjson prev "$prev_servers" \
+        '.mcpServers = ((.mcpServers // {}) | with_entries(select(.key as $k | ($prev | index($k)) == null)))' \
+        "$CLAUDE_JSON" > "$tmp" && mv "$tmp" "$CLAUDE_JSON"
+      jq -r '.[]' <<< "$prev_servers" | while read -r name; do
+        echo "  - mcp/$name"
+      done
+    fi
+    rm "$MCP_STATE"
+  fi
+
+  # Remove current symlink
+  [ -L "$AGENTS_DIR/current" ] && rm "$AGENTS_DIR/current"
+
+  echo ""
+  echo "$(_green "Reverted.") Claude Code restored to unmanaged state."
+  echo "  ~/.agents/ left intact — profiles preserved"
+  echo "  Run 'claude-profiles use <name>' to re-activate"
+}
+
+cmd_uninstall() {
+  echo "$(_bold "Uninstall claude-profiles")"
+  echo ""
+  echo "This will:"
+  echo "  1. Remove all managed symlinks from ~/.claude/"
+  echo "  2. Remove managed MCP servers from ~/.claude.json"
+  echo "  3. Restore CLAUDE.md from backup if available"
+  echo "  4. Leave ~/.agents/ intact (your profiles are safe)"
+  echo ""
+  printf "Continue? [y/N] "
+  read -r confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+  echo ""
+
+  cmd_revert
+
+  echo ""
+  echo "Remove the binary:"
+  echo "  sudo rm \"\$(which claude-profiles)\""
+  echo ""
+  echo "Remove profiles (optional, irreversible):"
+  echo "  rm -rf ~/.agents"
+}
+
 cmd_help() {
   cat <<EOF
 $(_bold "claude-profiles") — Claude Code agent profile switcher
@@ -379,6 +463,8 @@ $(_bold "Commands:")
   init <name>        scaffold new profile
   list               list profiles and active
   validate [name]    check integrity
+  revert             remove profile from Claude config, restore clean state
+  uninstall          revert + removal instructions
 
 $(_bold "Profile structure  (~/.agents/profiles/<name>/):")
   agents/            → ~/.claude/agents/*.md
@@ -404,10 +490,12 @@ EOF
 }
 
 case "${1:-help}" in
-  use)      cmd_use "${2:-}" ;;
-  init)     cmd_init "${2:-}" ;;
-  list)     cmd_list ;;
-  validate) cmd_validate "${2:-}" ;;
+  use)       cmd_use "${2:-}" ;;
+  init)      cmd_init "${2:-}" ;;
+  list)      cmd_list ;;
+  validate)  cmd_validate "${2:-}" ;;
+  revert)    cmd_revert ;;
+  uninstall) cmd_uninstall ;;
   help|--help|-h) cmd_help ;;
   *) echo "Unknown command: $1"; echo ""; cmd_help; exit 1 ;;
 esac

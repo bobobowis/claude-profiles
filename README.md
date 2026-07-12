@@ -31,6 +31,8 @@ curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/inst
 | `claude-profiles init <name>` | Scaffold new profile with correct folder structure |
 | `claude-profiles list` | Show all profiles, active, and artifact counts |
 | `claude-profiles validate [name]` | Check integrity — symlinks, dirs, mcp.json, SKILL.md |
+| `claude-profiles revert` | Remove current profile from Claude config, restore clean state |
+| `claude-profiles uninstall` | Revert + binary removal instructions |
 
 ---
 
@@ -155,6 +157,47 @@ argument-hint: <note-path>
 |---|---|
 | `CLAUDE_PROFILES_DIR` | `~/.agents` |
 | `CLAUDE_DIR` | `~/.claude` |
+
+---
+
+## Risks and safeguards
+
+### What claude-profiles touches
+
+| Target | How | Safeguard |
+|---|---|---|
+| `~/.claude/agents/`, `rules/`, `skills/`, `output-styles/`, `workflows/` | Creates/removes symlinks | Only removes symlinks whose target is inside `~/.agents/`. Other tools' symlinks are never touched. |
+| `~/.claude/CLAUDE.md` | Replaces with symlink | Backs up existing regular file as `CLAUDE.md.bak` before symlinking. Restored by `revert`. |
+| `~/.claude.json` `mcpServers` | `jq` patch — replaces key in-place | Only removes servers it previously added (tracked in `.mcp-state.json`). Pre-existing servers never touched. Writes to a temp file then `mv` — avoids partial writes. |
+
+### What it never touches
+
+- `~/.claude/settings.json`, `keybindings.json`, `themes/`, `projects/` (auto memory)
+- Any part of `~/.claude.json` other than `mcpServers`
+- Files inside `~/.claude/` subdirs (only creates/removes top-level symlinks)
+- Symlinks created by other tools (identified by target path — only absolute paths inside `~/.agents/` are ours)
+
+### Known risks
+
+**Race condition on `~/.claude.json`**: if Claude Code is writing to `~/.claude.json` at the same moment `use` patches it, the `jq` output could be stale. Mitigation: run `use` when Claude Code is not actively running a session. The `mv` from a tempfile is atomic on the same filesystem, so no partial writes.
+
+**`.mcp-state.json` loss**: if `~/.agents/.mcp-state.json` is deleted or corrupted, the next `use` won't know which servers to remove. Managed servers from the previous profile stay in `~/.claude.json` until removed manually or until `revert` is run (which clears based on state file — so if state is gone, MCP servers from the previous profile won't be auto-cleaned). Fix: run `claude-profiles revert` then `claude-profiles use <name>` to reset cleanly.
+
+**`CLAUDE.md.bak` overwrite**: if `CLAUDE.md.bak` already exists (e.g. from a previous backup), it is silently overwritten. If you have a custom `CLAUDE.md` you care about, copy it somewhere safe before first use.
+
+**Relative symlinks from other tools**: our ownership check (`readlink` starts with `~/.agents/`) only catches absolute symlinks we create. Tools that create relative symlinks into `~/.agents/` would not be cleaned. This is intentional — we don't create relative symlinks ourselves.
+
+### Reverting
+
+`claude-profiles revert` removes all managed state from Claude Code without deleting your profiles:
+
+- Removes managed symlinks from `~/.claude/` subdirs
+- Restores `~/.claude/CLAUDE.md` from `.bak` if available
+- Removes managed MCP servers from `~/.claude.json`
+- Deletes `.mcp-state.json` and the `current` symlink
+- `~/.agents/` left intact — profiles preserved
+
+`claude-profiles uninstall` does the same then prints binary removal instructions.
 
 ---
 
