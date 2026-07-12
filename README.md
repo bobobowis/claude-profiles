@@ -1,6 +1,6 @@
 # claude-profiles
 
-**Status:** shipped (v0.3)
+**Status:** shipped (v0.4)
 **Repo:** https://github.com/bobobowis/claude-profiles
 **Stack:** bash, Linux/Mac
 **Deps:** `python3` (required for MCP server switching — ships on every Mac/Linux by default)
@@ -24,10 +24,22 @@ brew tap bobobowis/claude-profiles
 brew install claude-profiles
 ```
 
+Completion is installed automatically via Homebrew.
+
 **curl:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bobobowis/claude-profiles/main/install.sh | bash
+```
+
+Then enable completion manually:
+
+```bash
+# bash
+echo 'eval "$(claude-profiles --completion-bash)"' >> ~/.bashrc
+
+# zsh
+echo 'eval "$(claude-profiles --completion-zsh)"' >> ~/.zshrc
 ```
 
 ---
@@ -221,6 +233,6 @@ argument-hint: <note-path>
 ## Roadmap
 
 - [ ] `claude-profiles import <path|url>` — pull profile from git repo
-- [ ] Shell completion (bash/zsh)
+- [x] Shell completion (bash/zsh)
 - [x] Homebrew formula
 - [ ] Go rewrite for Windows + richer UX
