@@ -6,7 +6,7 @@ PROFILES_DIR="$AGENTS_DIR/profiles"
 SHARED_DIR="$AGENTS_DIR/shared"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
-CLAUDE_JSON="$HOME/.claude.json"
+CLAUDE_JSON="${CLAUDE_JSON:-$HOME/.claude.json}"
 MCP_STATE="$AGENTS_DIR/.mcp-state.json"
 
 # "profile-subdir:claude-subdir:item-type(file|dir)"
