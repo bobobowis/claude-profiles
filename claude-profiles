@@ -4,13 +4,23 @@ set -euo pipefail
 AGENTS_DIR="${CLAUDE_PROFILES_DIR:-$HOME/.agents}"
 PROFILES_DIR="$AGENTS_DIR/profiles"
 SHARED_DIR="$AGENTS_DIR/shared"
-CLAUDE_SKILLS="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 
-_bold() { printf '\033[1m%s\033[0m' "$1"; }
-_green() { printf '\033[32m%s\033[0m' "$1"; }
+# "profile-subdir:claude-subdir:item-type(file|dir)"
+# file = symlink individual files; dir = symlink subdirectories (skills are folders)
+ARTIFACTS=(
+  "agents:agents:file"
+  "rules:rules:file"
+  "skills:skills:dir"
+  "output-styles:output-styles:file"
+  "workflows:workflows:file"
+)
+
+_bold()   { printf '\033[1m%s\033[0m' "$1"; }
+_green()  { printf '\033[32m%s\033[0m' "$1"; }
 _yellow() { printf '\033[33m%s\033[0m' "$1"; }
-_red() { printf '\033[31m%s\033[0m' "$1"; }
+_red()    { printf '\033[31m%s\033[0m' "$1"; }
 
 _profile_exists() { [ -d "$PROFILES_DIR/$1" ]; }
 
@@ -22,176 +32,204 @@ _current_profile() {
   fi
 }
 
-_link_skills() {
-  local src_dir="$1"
-  local prefix="$2"
-  [ -d "$src_dir" ] || return 0
-  for skill in "$src_dir"/*.md; do
-    [ -f "$skill" ] || continue
-    local name="$prefix-$(basename "$skill" .md)"
-    ln -sfn "$skill" "$CLAUDE_SKILLS/$name.md"
-    echo "  + $name"
+# Remove symlinks in a claude subdir whose targets are inside our agents dir.
+# We always create symlinks with absolute paths so a prefix check is sufficient.
+_remove_managed_links() {
+  local claude_subdir="$1"
+  local target_dir="$CLAUDE_DIR/$claude_subdir"
+  [ -d "$target_dir" ] || return 0
+  find "$target_dir" -maxdepth 1 -type l | while read -r link; do
+    local dest
+    dest="$(readlink "$link")"
+    if [[ "$dest" == "$AGENTS_DIR/"* ]]; then
+      rm "$link"
+    fi
   done
+}
+
+_link_artifacts() {
+  local src_dir="$1" claude_subdir="$2" item_type="$3"
+  [ -d "$src_dir" ] || return 0
+  local target_dir="$CLAUDE_DIR/$claude_subdir"
+  mkdir -p "$target_dir"
+  if [ "$item_type" = "file" ]; then
+    for item in "$src_dir"/*; do
+      [ -f "$item" ] || continue
+      local name; name="$(basename "$item")"
+      ln -sfn "$item" "$target_dir/$name"
+      echo "  + $claude_subdir/$name"
+    done
+  else
+    # skills: link subdirectories (each contains SKILL.md)
+    for item in "$src_dir"/*/; do
+      [ -d "$item" ] || continue
+      local name; name="$(basename "$item")"
+      ln -sfn "$item" "$target_dir/$name"
+      echo "  + $claude_subdir/$name/"
+    done
+  fi
 }
 
 cmd_use() {
   local profile="${1:-}"
   [ -n "$profile" ] || { echo "Usage: claude-profiles use <name>"; exit 1; }
   _profile_exists "$profile" || { echo "$(_red "Profile not found:") $profile"; exit 1; }
+  local profile_dir="$PROFILES_DIR/$profile"
 
-  mkdir -p "$CLAUDE_SKILLS"
+  # Remove all managed symlinks across every artifact dir
+  for artifact in "${ARTIFACTS[@]}"; do
+    IFS=: read -r _pdir claude_subdir _type <<< "$artifact"
+    _remove_managed_links "$claude_subdir"
+  done
 
-  # Remove stale profile and shared skill symlinks
-  find "$CLAUDE_SKILLS" -maxdepth 1 \( -name "profile-*" -o -name "shared-*" \) -type l -delete 2>/dev/null || true
-
-  # Remove stale CLAUDE.md symlink if it points into our profiles dir
+  # Remove managed CLAUDE.md symlink
   if [ -L "$CLAUDE_MD" ]; then
-    local target
-    target="$(readlink "$CLAUDE_MD")"
-    if [[ "$target" == "$PROFILES_DIR/"* ]]; then
+    local dest; dest="$(readlink "$CLAUDE_MD")"
+    if [[ "$dest" == "$AGENTS_DIR/"* ]]; then
       rm "$CLAUDE_MD"
     fi
   fi
 
-  # Link shared skills
-  _link_skills "$SHARED_DIR/skills" "shared"
+  # Link shared artifacts first; profile overrides on name conflict
+  for artifact in "${ARTIFACTS[@]}"; do
+    IFS=: read -r pdir claude_subdir type <<< "$artifact"
+    _link_artifacts "$SHARED_DIR/$pdir" "$claude_subdir" "$type"
+  done
 
-  # Link profile skills
-  _link_skills "$PROFILES_DIR/$profile/skills" "profile"
+  # Link profile artifacts
+  for artifact in "${ARTIFACTS[@]}"; do
+    IFS=: read -r pdir claude_subdir type <<< "$artifact"
+    _link_artifacts "$profile_dir/$pdir" "$claude_subdir" "$type"
+  done
 
   # Switch current symlink
-  ln -sfn "$PROFILES_DIR/$profile" "$AGENTS_DIR/current"
+  ln -sfn "$profile_dir" "$AGENTS_DIR/current"
 
   # Link CLAUDE.md if profile has one
-  if [ -f "$PROFILES_DIR/$profile/CLAUDE.md" ]; then
+  if [ -f "$profile_dir/CLAUDE.md" ]; then
     if [ -f "$CLAUDE_MD" ] && [ ! -L "$CLAUDE_MD" ]; then
       mv "$CLAUDE_MD" "${CLAUDE_MD}.bak"
-      echo "  $(_yellow "backed up") existing CLAUDE.md → CLAUDE.md.bak"
+      echo "  $(_yellow "backed up") CLAUDE.md → CLAUDE.md.bak"
     fi
-    ln -sfn "$PROFILES_DIR/$profile/CLAUDE.md" "$CLAUDE_MD"
+    ln -sfn "$profile_dir/CLAUDE.md" "$CLAUDE_MD"
     echo "  + CLAUDE.md → $profile"
   fi
 
   echo ""
-  echo "$(_green "Switched to profile:") $(_bold "$profile")"
+  echo "$(_green "→") $(_bold "$profile")"
 }
 
 cmd_init() {
   local profile="${1:-}"
   [ -n "$profile" ] || { echo "Usage: claude-profiles init <name>"; exit 1; }
-  _profile_exists "$profile" && { echo "$(_red "Profile already exists:") $profile"; exit 1; }
-
+  _profile_exists "$profile" && { echo "$(_red "Already exists:") $profile"; exit 1; }
   local profile_dir="$PROFILES_DIR/$profile"
-  mkdir -p "$profile_dir"/{agents,mcp,prompts,skills,templates}
-
+  mkdir -p "$profile_dir"/{agents,rules,skills,output-styles,workflows}
   cat > "$profile_dir/CLAUDE.md" <<EOF
-# $profile profile
+# $profile
 
-<!-- Add context and instructions for this agent profile here. -->
-<!-- This file is linked to ~/.claude/CLAUDE.md when the profile is active. -->
+<!-- Instructions for this profile. Linked to ~/.claude/CLAUDE.md when active. -->
 EOF
-
-  echo "$(_green "Created profile:") $(_bold "$profile")"
+  echo "$(_green "Created:") $(_bold "$profile")"
   echo "  $profile_dir"
   echo ""
-  echo "Next steps:"
-  echo "  1. Edit $profile_dir/CLAUDE.md"
-  echo "  2. Add .md skill files to $profile_dir/skills/"
-  echo "  3. Run: claude-profiles use $profile"
+  echo "  agents/        .md files    → ~/.claude/agents/"
+  echo "  rules/         .md files    → ~/.claude/rules/"
+  echo "  skills/        folders      → ~/.claude/skills/<name>/SKILL.md"
+  echo "  output-styles/ .md files    → ~/.claude/output-styles/"
+  echo "  workflows/     .js files    → ~/.claude/workflows/"
+  echo ""
+  echo "  claude-profiles use $profile"
 }
 
 cmd_list() {
-  local current
-  current="$(_current_profile)"
-
-  [ -d "$PROFILES_DIR" ] || { echo "No profiles directory found at $PROFILES_DIR"; exit 1; }
-
-  echo "$(_bold "Profiles") ($PROFILES_DIR)"
+  local current; current="$(_current_profile)"
+  [ -d "$PROFILES_DIR" ] || { echo "No profiles at $PROFILES_DIR"; exit 1; }
+  echo "$(_bold "Profiles")"
   echo ""
-
   local found=0
   for dir in "$PROFILES_DIR"/*/; do
     [ -d "$dir" ] || continue
     found=1
-    local name
-    name="$(basename "$dir")"
+    local name; name="$(basename "$dir")"
     if [ "$name" = "$current" ]; then
-      echo "  $(_green "→ $name") (active)"
+      printf "  %s %s\n" "$(_green "→")" "$(_bold "$name") (active)"
     else
-      echo "    $name"
+      printf "    %s\n" "$name"
     fi
-
-    # Count skills
-    local skill_count=0
-    if [ -d "$dir/skills" ]; then
-      skill_count=$(find "$dir/skills" -maxdepth 1 -name "*.md" | wc -l)
-    fi
-    echo "      skills: $skill_count"
+    local sc=0 ac=0 rc=0
+    [ -d "$dir/skills" ]       && sc=$(find "$dir/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    [ -d "$dir/agents" ]       && ac=$(find "$dir/agents" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l)
+    [ -d "$dir/rules" ]        && rc=$(find "$dir/rules" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l)
+    printf "      skills:%-3s agents:%-3s rules:%s\n" "$sc" "$ac" "$rc"
   done
-
   [ "$found" -eq 0 ] && echo "  (none — run: claude-profiles init <name>)"
-
-  # Show shared skills count
-  local shared_count=0
-  if [ -d "$SHARED_DIR/skills" ]; then
-    shared_count=$(find "$SHARED_DIR/skills" -maxdepth 1 -name "*.md" | wc -l)
-  fi
+  local ss=0
+  [ -d "$SHARED_DIR/skills" ] && ss=$(find "$SHARED_DIR/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
   echo ""
-  echo "  shared skills: $shared_count"
+  echo "  shared skills: $ss"
 }
 
 cmd_validate() {
   local target="${1:-}"
   local errors=0
 
-  _check() {
-    local label="$1"
-    local ok="$2"
-    local msg="${3:-}"
-    if [ "$ok" = "1" ]; then
-      echo "  $(_green "✓") $label"
-    else
-      echo "  $(_red "✗") $label${msg:+ — $msg}"
-      errors=$((errors + 1))
-    fi
-  }
+  _ok()   { echo "  $(_green "✓") $1"; }
+  _fail() { echo "  $(_red "✗") $1${2:+ — $2}"; errors=$((errors + 1)); }
+  _warn() { echo "  $(_yellow "~") $1"; }
 
-  echo "$(_bold "Validating claude-profiles setup")"
+  echo "$(_bold "Validating")"
   echo ""
 
-  # Base structure
-  _check "~/.agents/ exists" "$([ -d "$AGENTS_DIR" ] && echo 1 || echo 0)"
-  _check "profiles/ exists" "$([ -d "$PROFILES_DIR" ] && echo 1 || echo 0)"
-  _check "shared/ exists" "$([ -d "$SHARED_DIR" ] && echo 1 || echo 0)"
+  [ -d "$AGENTS_DIR" ]   && _ok "~/.agents/" || _fail "~/.agents/ missing"
+  [ -d "$PROFILES_DIR" ] && _ok "profiles/"  || _fail "profiles/ missing"
+  [ -d "$SHARED_DIR" ]   && _ok "shared/"    || _fail "shared/ missing"
 
-  # Current symlink
   if [ -L "$AGENTS_DIR/current" ]; then
     if [ -d "$(readlink "$AGENTS_DIR/current")" ]; then
-      _check "current → $(_current_profile)" "1"
+      _ok "current → $(_current_profile)"
     else
-      _check "current symlink" "0" "broken target: $(readlink "$AGENTS_DIR/current")"
+      _fail "current symlink" "broken: $(readlink "$AGENTS_DIR/current")"
     fi
   else
-    _check "current symlink" "0" "not set — run: claude-profiles use <name>"
+    _fail "current symlink" "not set"
   fi
 
-  # CLAUDE.md
   if [ -L "$CLAUDE_MD" ]; then
-    if [ -f "$(readlink "$CLAUDE_MD")" ]; then
-      _check "CLAUDE.md symlink valid" "1"
+    local dest; dest="$(readlink "$CLAUDE_MD")"
+    if [ -f "$dest" ]; then
+      _ok "CLAUDE.md → $(basename "$(dirname "$dest")")"
     else
-      _check "CLAUDE.md symlink" "0" "broken target: $(readlink "$CLAUDE_MD")"
+      _fail "CLAUDE.md symlink" "broken: $dest"
     fi
   elif [ -f "$CLAUDE_MD" ]; then
-    _check "CLAUDE.md" "1" "(regular file, not managed by claude-profiles)"
+    _warn "CLAUDE.md is a regular file (not profile-managed)"
   else
-    _check "CLAUDE.md" "0" "missing"
+    _warn "CLAUDE.md missing"
   fi
 
-  # Validate specific or all profiles
+  # Broken symlinks in managed claude dirs (only ones we own)
+  echo ""
+  local broken=0
+  for artifact in "${ARTIFACTS[@]}"; do
+    IFS=: read -r _pdir claude_subdir _type <<< "$artifact"
+    local tdir="$CLAUDE_DIR/$claude_subdir"
+    [ -d "$tdir" ] || continue
+    while IFS= read -r -d '' link; do
+      local dest; dest="$(readlink "$link")"
+      # Only check symlinks we created (target inside agents dir)
+      [[ "$dest" == "$AGENTS_DIR/"* ]] || continue
+      [ -e "$link" ] && continue
+      echo "  $(_red "✗") broken: $claude_subdir/$(basename "$link")"
+      broken=$((broken + 1)); errors=$((errors + 1))
+    done < <(find "$tdir" -maxdepth 1 -type l -print0)
+  done
+  [ "$broken" -eq 0 ] && _ok "no broken managed symlinks in ~/.claude/"
+
+  # Profile checks
   local profiles=()
   if [ -n "$target" ]; then
-    _profile_exists "$target" || { echo "$(_red "Profile not found:") $target"; exit 1; }
+    _profile_exists "$target" || { echo "$(_red "Not found:") $target"; exit 1; }
     profiles=("$target")
   else
     for dir in "$PROFILES_DIR"/*/; do
@@ -201,37 +239,37 @@ cmd_validate() {
 
   for profile in "${profiles[@]}"; do
     echo ""
-    echo "  Profile: $(_bold "$profile")"
+    echo "  $(_bold "$profile")"
     local pdir="$PROFILES_DIR/$profile"
-    for subdir in agents mcp prompts skills templates; do
-      _check "  $subdir/" "$([ -d "$pdir/$subdir" ] && echo 1 || echo 0)"
+    for subdir in agents rules skills output-styles workflows; do
+      if [ -d "$pdir/$subdir" ]; then
+        _ok "  $subdir/"
+      else
+        _warn "  $subdir/ (empty, not created)"
+      fi
     done
     if [ -f "$pdir/CLAUDE.md" ]; then
-      echo "  $(_green "✓")   CLAUDE.md"
+      _ok "  CLAUDE.md"
     else
-      echo "  $(_yellow "~")   CLAUDE.md (optional, not set)"
+      _warn "  CLAUDE.md (optional)"
+    fi
+    # Each skill folder must contain SKILL.md
+    if [ -d "$pdir/skills" ]; then
+      for skill_dir in "$pdir/skills"/*/; do
+        [ -d "$skill_dir" ] || continue
+        local sname; sname="$(basename "$skill_dir")"
+        if [ ! -f "$skill_dir/SKILL.md" ]; then
+          _fail "  skills/$sname/ missing SKILL.md"
+        fi
+      done
     fi
   done
-
-  # Check for broken skill symlinks
-  echo ""
-  local broken_skills=0
-  if [ -d "$CLAUDE_SKILLS" ]; then
-    while IFS= read -r -d '' link; do
-      if [ ! -e "$link" ]; then
-        echo "  $(_red "✗") broken skill symlink: $(basename "$link")"
-        broken_skills=$((broken_skills + 1))
-        errors=$((errors + 1))
-      fi
-    done < <(find "$CLAUDE_SKILLS" -maxdepth 1 \( -name "profile-*" -o -name "shared-*" \) -type l -print0)
-  fi
-  [ "$broken_skills" -eq 0 ] && echo "  $(_green "✓") no broken skill symlinks"
 
   echo ""
   if [ "$errors" -eq 0 ]; then
     echo "$(_green "All checks passed")"
   else
-    echo "$(_red "$errors error(s) found")"
+    echo "$(_red "$errors error(s)")"
     exit 1
   fi
 }
@@ -240,23 +278,26 @@ cmd_help() {
   cat <<EOF
 $(_bold "claude-profiles") — Claude Code agent profile switcher
 
-$(_bold "Usage:")
-  claude-profiles use <name>        switch to profile
-  claude-profiles init <name>       scaffold new profile
-  claude-profiles list              list profiles and active
-  claude-profiles validate [name]   check profile integrity
+$(_bold "Commands:")
+  use <name>         switch to profile
+  init <name>        scaffold new profile
+  list               list profiles and active
+  validate [name]    check integrity
 
-$(_bold "Environment:")
-  CLAUDE_PROFILES_DIR   base dir (default: ~/.agents)
-  CLAUDE_SKILLS_DIR     skills dir (default: ~/.claude/skills)
+$(_bold "Profile structure  (~/.agents/profiles/<name>/):")
+  agents/            → ~/.claude/agents/*.md
+  rules/             → ~/.claude/rules/*.md (supports paths: frontmatter)
+  skills/            → ~/.claude/skills/<skill>/ (folder with SKILL.md)
+  output-styles/     → ~/.claude/output-styles/*.md
+  workflows/         → ~/.claude/workflows/*.js
+  CLAUDE.md          → ~/.claude/CLAUDE.md
 
-$(_bold "Profile structure:")
-  ~/.agents/
-    profiles/<name>/
-      agents/   mcp/   prompts/   skills/   templates/
-      CLAUDE.md
-    shared/skills/    (active in all profiles)
-    current -> profiles/<active>
+$(_bold "Shared  (~/.agents/shared/):")
+  Same structure. Always active. Profile wins on name conflict.
+
+$(_bold "Env:")
+  CLAUDE_PROFILES_DIR   (default: ~/.agents)
+  CLAUDE_DIR            (default: ~/.claude)
 EOF
 }
 
@@ -266,5 +307,5 @@ case "${1:-help}" in
   list)     cmd_list ;;
   validate) cmd_validate "${2:-}" ;;
   help|--help|-h) cmd_help ;;
-  *) echo "Unknown command: $1"; echo "Run: claude-profiles help"; exit 1 ;;
+  *) echo "Unknown command: $1"; echo ""; cmd_help; exit 1 ;;
 esac
