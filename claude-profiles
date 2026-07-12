@@ -72,7 +72,7 @@ _link_artifacts() {
   fi
 }
 
-# Patch ~/.claude.json mcpServers:
+# Patch ~/.claude.json mcpServers using python3 (no jq dependency).
 # - Remove servers we previously added (tracked in .mcp-state.json)
 # - Inject shared + profile servers (profile wins on conflict)
 # - Update state file so next switch knows what to remove
@@ -81,50 +81,69 @@ _patch_mcp() {
   local profile_mcp="$PROFILES_DIR/$profile/mcp.json"
   local shared_mcp="$SHARED_DIR/mcp.json"
 
-  [ -f "$CLAUDE_JSON" ] || { echo "  $(_yellow "~") MCP skipped — ~/.claude.json not found"; return 0; }
-
-  if ! command -v jq &>/dev/null; then
-    echo "  $(_yellow "~") MCP skipped — jq not installed (brew install jq / apt install jq)"
-    return 0
-  fi
-
-  # Skip entirely if no state and no mcp.json to apply
+  # Nothing to do and no cleanup needed
   [ -f "$MCP_STATE" ] || [ -f "$profile_mcp" ] || [ -f "$shared_mcp" ] || return 0
 
-  # Previously managed server names
-  local prev_servers="[]"
-  [ -f "$MCP_STATE" ] && prev_servers="$(jq '.managed_servers // []' "$MCP_STATE")"
+  [ -f "$CLAUDE_JSON" ] || { echo "  $(_yellow "~") MCP skipped — ~/.claude.json not found"; return 0; }
 
-  # Merge shared + profile servers (profile wins on conflict)
-  local merged="{}"
-  if [ -f "$shared_mcp" ]; then
-    local shared_servers; shared_servers="$(jq '.mcpServers // {}' "$shared_mcp")"
-    merged="$(jq -n --argjson a "$merged" --argjson b "$shared_servers" '$a * $b')"
-  fi
-  if [ -f "$profile_mcp" ]; then
-    local profile_servers; profile_servers="$(jq '.mcpServers // {}' "$profile_mcp")"
-    merged="$(jq -n --argjson a "$merged" --argjson b "$profile_servers" '$a * $b')"
+  if ! command -v python3 &>/dev/null; then
+    echo "  $(_red "✗") MCP failed — python3 not found (required for MCP server switching)"
+    return 1
   fi
 
-  local new_names
-  new_names="$(jq -n --argjson m "$merged" '$m | keys')"
+  python3 - \
+    "$CLAUDE_JSON" \
+    "$MCP_STATE" \
+    "${shared_mcp:-}" \
+    "${profile_mcp:-}" \
+    "$profile" <<'PYEOF'
+import json, sys, os, tempfile
 
-  # Patch: remove previously managed, add new
-  local tmp; tmp="$(mktemp)"
-  jq --argjson prev "$prev_servers" \
-     --argjson new_servers "$merged" \
-     '.mcpServers = ((.mcpServers // {}) | with_entries(select(.key as $k | ($prev | index($k)) == null))) * $new_servers' \
-     "$CLAUDE_JSON" > "$tmp" && mv "$tmp" "$CLAUDE_JSON"
+claude_json_path = sys.argv[1]
+state_path       = sys.argv[2]
+shared_mcp_path  = sys.argv[3]
+profile_mcp_path = sys.argv[4]
+profile_name     = sys.argv[5]
 
-  # Save state
-  printf '{"profile":"%s","managed_servers":%s}\n' "$profile" "$new_names" > "$MCP_STATE"
+with open(claude_json_path) as f:
+    claude = json.load(f)
 
-  # Report
-  if [ "$(jq 'length' <<< "$merged")" -gt 0 ]; then
-    jq -r 'keys[]' <<< "$merged" | while read -r name; do
-      echo "  + mcp/$name"
-    done
-  fi
+prev_servers = []
+if os.path.exists(state_path):
+    with open(state_path) as f:
+        prev_servers = json.load(f).get("managed_servers", [])
+
+# Remove previously managed servers
+current = claude.get("mcpServers", {})
+current = {k: v for k, v in current.items() if k not in prev_servers}
+
+# Merge: shared first, profile overrides
+merged = {}
+if os.path.exists(shared_mcp_path):
+    with open(shared_mcp_path) as f:
+        merged.update(json.load(f).get("mcpServers", {}))
+if os.path.exists(profile_mcp_path):
+    with open(profile_mcp_path) as f:
+        merged.update(json.load(f).get("mcpServers", {}))
+
+claude["mcpServers"] = {**current, **merged}
+
+# Atomic write
+tmp = claude_json_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(claude, f, indent=2)
+    f.write("\n")
+os.replace(tmp, claude_json_path)
+
+# Save state
+with open(state_path, "w") as f:
+    json.dump({"profile": profile_name, "managed_servers": list(merged.keys())}, f, indent=2)
+    f.write("\n")
+
+# Print added servers
+for name in merged:
+    print(f"  + mcp/{name}")
+PYEOF
 }
 
 cmd_use() {
@@ -203,7 +222,7 @@ EOF
   echo "  skills/        folders      → ~/.claude/skills/<name>/SKILL.md"
   echo "  output-styles/ .md files    → ~/.claude/output-styles/"
   echo "  workflows/     .js files    → ~/.claude/workflows/"
-  echo "  mcp.json       servers      → ~/.claude.json mcpServers (requires jq)"
+  echo "  mcp.json       servers      → ~/.claude.json mcpServers (requires python3)"
   echo ""
   echo "  claude-profiles use $profile"
 }
@@ -227,13 +246,13 @@ cmd_list() {
     [ -d "$dir/skills" ] && sc=$(find "$dir/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
     [ -d "$dir/agents" ] && ac=$(find "$dir/agents" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l)
     [ -d "$dir/rules" ]  && rc=$(find "$dir/rules" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l)
-    [ -f "$dir/mcp.json" ] && command -v jq &>/dev/null && mc=$(jq '.mcpServers // {} | length' "$dir/mcp.json" 2>/dev/null || echo 0)
+    [ -f "$dir/mcp.json" ] && command -v python3 &>/dev/null && mc=$(python3 -c "import json;d=json.load(open('$dir/mcp.json'));print(len(d.get('mcpServers',{})))" 2>/dev/null || echo 0)
     printf "      skills:%-3s agents:%-3s rules:%-3s mcp:%s\n" "$sc" "$ac" "$rc" "$mc"
   done
   [ "$found" -eq 0 ] && echo "  (none — run: claude-profiles init <name>)"
   local ss=0 sm=0
   [ -d "$SHARED_DIR/skills" ] && ss=$(find "$SHARED_DIR/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-  [ -f "$SHARED_DIR/mcp.json" ] && command -v jq &>/dev/null && sm=$(jq '.mcpServers // {} | length' "$SHARED_DIR/mcp.json" 2>/dev/null || echo 0)
+  [ -f "$SHARED_DIR/mcp.json" ] && command -v python3 &>/dev/null && sm=$(python3 -c "import json;d=json.load(open('$SHARED_DIR/mcp.json'));print(len(d.get('mcpServers',{})))" 2>/dev/null || echo 0)
   echo ""
   echo "  shared — skills:$ss  mcp:$sm"
 }
@@ -253,11 +272,11 @@ cmd_validate() {
   [ -d "$PROFILES_DIR" ] && _ok "profiles/"  || _fail "profiles/ missing"
   [ -d "$SHARED_DIR" ]   && _ok "shared/"    || _fail "shared/ missing"
 
-  # jq availability
-  if command -v jq &>/dev/null; then
-    _ok "jq available (MCP support enabled)"
+  # python3 availability (required for MCP)
+  if command -v python3 &>/dev/null; then
+    _ok "python3 available (MCP support enabled)"
   else
-    _warn "jq not found — MCP patching disabled"
+    _warn "python3 not found — MCP patching disabled"
   fi
 
   if [ -L "$AGENTS_DIR/current" ]; then
@@ -284,10 +303,14 @@ cmd_validate() {
   fi
 
   # MCP state
-  if [ -f "$MCP_STATE" ] && command -v jq &>/dev/null; then
-    local mcp_profile; mcp_profile="$(jq -r '.profile // ""' "$MCP_STATE")"
-    local mcp_count; mcp_count="$(jq '.managed_servers | length' "$MCP_STATE")"
-    _ok "MCP state — profile: $mcp_profile, managed servers: $mcp_count"
+  if [ -f "$MCP_STATE" ] && command -v python3 &>/dev/null; then
+    local mcp_info
+    mcp_info="$(python3 -c "
+import json
+with open('$MCP_STATE') as f: d = json.load(f)
+print(d.get('profile','?'), len(d.get('managed_servers',[])))
+")"
+    _ok "MCP state — profile: $(echo "$mcp_info" | cut -d' ' -f1), managed: $(echo "$mcp_info" | cut -d' ' -f2)"
   fi
 
   # Broken symlinks in managed claude dirs (only ones we own)
@@ -336,15 +359,26 @@ cmd_validate() {
     fi
     # mcp.json check
     if [ -f "$pdir/mcp.json" ]; then
-      if command -v jq &>/dev/null; then
-        if jq -e '.mcpServers' "$pdir/mcp.json" &>/dev/null; then
-          local mc; mc="$(jq '.mcpServers | length' "$pdir/mcp.json")"
-          _ok "  mcp.json ($mc server(s))"
+      if command -v python3 &>/dev/null; then
+        local mc_result
+        mc_result="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$pdir/mcp.json'))
+    if 'mcpServers' not in d:
+        print('ERR')
+    else:
+        print(len(d['mcpServers']))
+except Exception as e:
+    print('ERR:' + str(e))
+" 2>/dev/null)"
+        if [[ "$mc_result" == ERR* ]]; then
+          _fail "  mcp.json" "${mc_result#ERR:}"
         else
-          _fail "  mcp.json" "missing mcpServers key"
+          _ok "  mcp.json ($mc_result server(s))"
         fi
       else
-        _ok "  mcp.json (jq unavailable — skipping parse)"
+        _ok "  mcp.json (python3 unavailable — skipping parse)"
       fi
     else
       _warn "  mcp.json (optional)"
@@ -406,18 +440,30 @@ cmd_revert() {
   fi
 
   # Remove managed MCP servers
-  if [ -f "$MCP_STATE" ] && [ -f "$CLAUDE_JSON" ] && command -v jq &>/dev/null; then
-    local prev_servers; prev_servers="$(jq '.managed_servers // []' "$MCP_STATE")"
-    local count; count="$(jq 'length' <<< "$prev_servers")"
-    if [ "$count" -gt 0 ]; then
-      local tmp; tmp="$(mktemp)"
-      jq --argjson prev "$prev_servers" \
-        '.mcpServers = ((.mcpServers // {}) | with_entries(select(.key as $k | ($prev | index($k)) == null)))' \
-        "$CLAUDE_JSON" > "$tmp" && mv "$tmp" "$CLAUDE_JSON"
-      jq -r '.[]' <<< "$prev_servers" | while read -r name; do
-        echo "  - mcp/$name"
-      done
-    fi
+  if [ -f "$MCP_STATE" ] && [ -f "$CLAUDE_JSON" ] && command -v python3 &>/dev/null; then
+    python3 - "$CLAUDE_JSON" "$MCP_STATE" <<'PYEOF'
+import json, sys, os
+
+claude_json_path = sys.argv[1]
+state_path       = sys.argv[2]
+
+with open(claude_json_path) as f:
+    claude = json.load(f)
+with open(state_path) as f:
+    prev_servers = json.load(f).get("managed_servers", [])
+
+for name in prev_servers:
+    print(f"  - mcp/{name}")
+
+claude["mcpServers"] = {k: v for k, v in claude.get("mcpServers", {}).items()
+                        if k not in prev_servers}
+
+tmp = claude_json_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(claude, f, indent=2)
+    f.write("\n")
+os.replace(tmp, claude_json_path)
+PYEOF
     rm "$MCP_STATE"
   fi
 
@@ -473,7 +519,7 @@ $(_bold "Profile structure  (~/.agents/profiles/<name>/):")
   output-styles/     → ~/.claude/output-styles/*.md
   workflows/         → ~/.claude/workflows/*.js
   CLAUDE.md          → ~/.claude/CLAUDE.md
-  mcp.json           → ~/.claude.json mcpServers (requires jq)
+  mcp.json           → ~/.claude.json mcpServers (requires python3)
 
 $(_bold "Shared  (~/.agents/shared/):")
   Same structure + mcp.json. Always active. Profile wins on name conflict.
