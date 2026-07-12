@@ -595,5 +595,11 @@ case "${1:-help}" in
   help|--help|-h) cmd_help ;;
   --completion-bash) cmd_completion_bash ;;
   --completion-zsh)  cmd_completion_zsh ;;
+  --completion)
+    case "${2:-}" in
+      bash) cmd_completion_bash ;;
+      zsh)  cmd_completion_zsh ;;
+      *) echo "Usage: claude-profiles --completion <bash|zsh>"; exit 1 ;;
+    esac ;;
   *) echo "Unknown command: $1"; echo ""; cmd_help; exit 1 ;;
 esac
