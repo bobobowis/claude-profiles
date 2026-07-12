@@ -1,6 +1,6 @@
 # claude-profiles
 
-**Status:** shipped (v0.4)
+**Status:** shipped (v0.5)
 **Repo:** https://github.com/bobobowis/claude-profiles
 **Stack:** bash, Linux/Mac
 **Deps:** `python3` (required for MCP server switching — ships on every Mac/Linux by default)
@@ -178,6 +178,7 @@ argument-hint: <note-path>
 |---|---|
 | `CLAUDE_PROFILES_DIR` | `~/.agents` |
 | `CLAUDE_DIR` | `~/.claude` |
+| `CLAUDE_JSON` | `~/.claude.json` |
 
 ---
 
